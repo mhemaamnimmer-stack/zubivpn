@@ -1,0 +1,136 @@
+name: Verify ZubiVPN WPF
+
+on:
+  push:
+    branches:
+      - verify-wpf-v31-2-1
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout verification source
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reassemble verified source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem verification/chunk*.txt | Sort-Object Name
+          if ($parts.Count -ne 9) { throw "Expected 9 source chunks, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("verification/project.zip", [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash verification/project.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SOURCE_SHA256=$hash"
+          if ($hash -ne "1f24a11d7c2bdd87124700bd297a04f7a5d24c49d86419d4c7d88b699fa3ce73") {
+            throw "Source archive hash mismatch"
+          }
+          Expand-Archive verification/project.zip verification/src -Force
+
+      - name: Show SDK
+        shell: pwsh
+        run: dotnet --info
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -r win-x64
+
+      - name: Apply source fixes mirrored in final package
+        shell: pwsh
+        run: |
+          $httpTargets = @(
+            "verification/src/ZubiVPN.Wpf/Services/IpLookupService.cs",
+            "verification/src/ZubiVPN.Wpf/Services/ZubiApiService.cs",
+            "verification/src/ZubiVPN.Wpf/Services/EdgeRegistrarService.cs"
+          )
+          foreach ($file in $httpTargets) {
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.Net\.Http;") {
+              Set-Content $file ("using System.Net.Http;`r`n" + $txt)
+            }
+          }
+          $wireGuard = "verification/src/ZubiVPN.Wpf/Services/WireGuardService.cs"
+          $txt = Get-Content $wireGuard -Raw
+          if ($txt -notmatch "(?m)^using System\.IO;") {
+            Set-Content $wireGuard ("using System.IO;`r`n" + $txt)
+          }
+
+          $mainXaml = "verification/src/ZubiVPN.Wpf/MainWindow.xaml"
+          $xaml = Get-Content $mainXaml -Raw
+          $xaml = $xaml.Replace('Width="{StaticResource SidebarWidth}"','Width="220"')
+          $xaml = $xaml.Replace('Height="{StaticResource TopbarHeight}"','Height="64"')
+          Set-Content $mainXaml $xaml
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --no-restore
+
+      - name: Publish
+        shell: pwsh
+        run: dotnet publish verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --self-contained true --no-restore -o verification/publish
+
+      - name: Launch smoke test
+        shell: pwsh
+        run: |
+          $exe = "verification/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing" }
+          $before = Get-Date
+          try {
+            $p = Start-Process -FilePath $exe -PassThru
+          } catch {
+            Write-Host "START_PROCESS_EXCEPTION=$($_.Exception.Message)"
+            throw
+          }
+          Start-Sleep -Seconds 8
+          $p.Refresh()
+          if ($p.HasExited) {
+            Write-Host "PROCESS_EXITED=true"
+            Write-Host "EXIT_CODE=$($p.ExitCode)"
+            Write-Host "Recent application errors:"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$before.AddSeconds(-5); Level=2} -ErrorAction SilentlyContinue |
+              Select-Object -First 20 TimeCreated,ProviderName,Id,Message |
+              Format-List | Out-String | Write-Host
+            throw "ZubiVPN exited during startup smoke test"
+          }
+          Write-Host "PROCESS_ALIVE=true"
+          Write-Host "PID=$($p.Id)"
+          Write-Host "MAIN_WINDOW_HANDLE=$($p.MainWindowHandle)"
+          Write-Host "MAIN_WINDOW_TITLE=$($p.MainWindowTitle)"
+          if ($p.MainWindowHandle -eq 0) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "ZubiVPN process stayed alive but no main window was created"
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "LAUNCH_SMOKE=PASS"
+
+      - name: Record proof
+        shell: pwsh
+        run: |
+          $exe = "verification/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing after publish" }
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          @(
+            "WINDOWS_WPF_BUILD=PASS"
+            "BUILD_OS=windows-latest"
+            "CONFIGURATION=Release"
+            "RUNTIME=win-x64"
+            "SOURCE_SHA256=1f24a11d7c2bdd87124700bd297a04f7a5d24c49d86419d4c7d88b699fa3ce73"
+            "EXE_SHA256=$sha"
+          ) | Set-Content verification/publish/VERIFIED-BUILD.txt
+          Get-Content verification/publish/VERIFIED-BUILD.txt
+
+      - name: Upload verified Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubiVPN-WPF-Windows-Verified
+          path: verification/publish/
+          if-no-files-found: error

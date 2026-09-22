@@ -44,6 +44,20 @@ jobs:
         shell: pwsh
         run: dotnet restore verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -r win-x64
 
+      - name: Apply source fixes mirrored in final package
+        shell: pwsh
+        run: |
+          $targets = @(
+            "verification/src/ZubiVPN.Wpf/Services/IpLookupService.cs",
+            "verification/src/ZubiVPN.Wpf/Services/ZubiApiService.cs"
+          )
+          foreach ($file in $targets) {
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.Net\.Http;") {
+              Set-Content $file ("using System.Net.Http;`r`n" + $txt)
+            }
+          }
+
       - name: Build
         shell: pwsh
         run: dotnet build verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --no-restore

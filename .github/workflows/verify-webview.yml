@@ -29,7 +29,7 @@ jobs:
           [IO.File]::WriteAllBytes("verification-webview/source.zip", [Convert]::FromBase64String($b64))
           $hash = (Get-FileHash verification-webview/source.zip -Algorithm SHA256).Hash.ToLower()
           Write-Host "SOURCE_SHA256=$hash"
-          if ($hash -ne "6b9dc9d5eaca1de1c2ebcef0b18b0dbf67e6479e6e6949594b643a23685c13dc") {
+          if ($hash -ne "691a4aad8fd51547318097e982ad1b7d99e89bd6412d6c24a8db493d2737cc49") {
             throw "Source archive hash mismatch"
           }
           Expand-Archive verification-webview/source.zip verification-webview/src -Force
@@ -188,7 +188,7 @@ jobs:
             "EDGE_REGISTRAR=https://63.189.51.215/wg/register"
             "EDGE_WIREGUARD=63.189.51.215:51820/udp"
             "DIRECT_CORE_VPN_FALLBACK=DISABLED"
-            "SOURCE_SHA256=6b9dc9d5eaca1de1c2ebcef0b18b0dbf67e6479e6e6949594b643a23685c13dc"
+            "SOURCE_SHA256=691a4aad8fd51547318097e982ad1b7d99e89bd6412d6c24a8db493d2737cc49"
             "EXE_SHA256=$exeHash"
             ""
             "BACKEND_PROBES:"

@@ -36,8 +36,23 @@ jobs:
       - name: Apply compile-safe patch mirrored to final package
         shell: pwsh
         run: |
+          $httpTargets = @(
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/CoreApiService.cs",
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/EdgeService.cs",
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/DiagnosticsService.cs"
+          )
+          foreach ($file in $httpTargets) {
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.Net\.Http;") {
+              Set-Content $file ("using System.Net.Http;`r`n" + $txt)
+            }
+          }
+
           $discord = "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/DiscordPresenceService.cs"
           $txt = Get-Content $discord -Raw
+          if ($txt -notmatch "(?m)^using System\.IO;") {
+            $txt = "using System.IO;`r`n" + $txt
+          }
           $txt = $txt.Replace("var body = new byte[n];", "var body = new byte[(int)n];")
           Set-Content $discord $txt
 

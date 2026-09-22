@@ -67,6 +67,7 @@ jobs:
           $mainXaml = "verification/src/ZubiVPN.Wpf/MainWindow.xaml"
           $xaml = Get-Content $mainXaml -Raw
           $xaml = $xaml.Replace('Width="{StaticResource SidebarWidth}"','Width="220"')
+          $xaml = $xaml.Replace('Height="{StaticResource TopbarHeight}"','Height="64"')
           Set-Content $mainXaml $xaml
 
       - name: Build

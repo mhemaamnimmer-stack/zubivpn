@@ -1,0 +1,73 @@
+name: Verify ZubiVPN WPF
+
+on:
+  push:
+    branches:
+      - verify-wpf-v31-2-1
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout verification branch
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reassemble verified source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem verification/chunk*.txt | Sort-Object Name
+          if ($parts.Count -ne 9) { throw "Expected 9 source chunks, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("verification/project.zip", [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash verification/project.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SOURCE_SHA256=$hash"
+          if ($hash -ne "1f24a11d7c2bdd87124700bd297a04f7a5d24c49d86419d4c7d88b699fa3ce73") {
+            throw "Source archive hash mismatch"
+          }
+          Expand-Archive verification/project.zip verification/src -Force
+
+      - name: Show SDK
+        shell: pwsh
+        run: dotnet --info
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -r win-x64
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --no-restore
+
+      - name: Publish
+        shell: pwsh
+        run: dotnet publish verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --self-contained true --no-restore -o verification/publish
+
+      - name: Record proof
+        shell: pwsh
+        run: |
+          $exe = "verification/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing after publish" }
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          @(
+            "WINDOWS_WPF_BUILD=PASS"
+            "BUILD_OS=windows-latest"
+            "CONFIGURATION=Release"
+            "RUNTIME=win-x64"
+            "SOURCE_SHA256=1f24a11d7c2bdd87124700bd297a04f7a5d24c49d86419d4c7d88b699fa3ce73"
+            "EXE_SHA256=$sha"
+          ) | Set-Content verification/publish/VERIFIED-BUILD.txt
+          Get-Content verification/publish/VERIFIED-BUILD.txt
+
+      - name: Upload verified Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubiVPN-WPF-Windows-Verified
+          path: verification/publish/
+          if-no-files-found: error

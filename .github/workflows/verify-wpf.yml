@@ -72,6 +72,40 @@ jobs:
         shell: pwsh
         run: dotnet publish verification/src/ZubiVPN.Wpf/ZubiVPN.Wpf.csproj -c Release -r win-x64 --self-contained true --no-restore -o verification/publish
 
+      - name: Launch smoke test
+        shell: pwsh
+        run: |
+          $exe = "verification/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing" }
+          $before = Get-Date
+          try {
+            $p = Start-Process -FilePath $exe -PassThru
+          } catch {
+            Write-Host "START_PROCESS_EXCEPTION=$($_.Exception.Message)"
+            throw
+          }
+          Start-Sleep -Seconds 8
+          $p.Refresh()
+          if ($p.HasExited) {
+            Write-Host "PROCESS_EXITED=true"
+            Write-Host "EXIT_CODE=$($p.ExitCode)"
+            Write-Host "Recent application errors:"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$before.AddSeconds(-5); Level=2} -ErrorAction SilentlyContinue |
+              Select-Object -First 20 TimeCreated,ProviderName,Id,Message |
+              Format-List | Out-String | Write-Host
+            throw "ZubiVPN exited during startup smoke test"
+          }
+          Write-Host "PROCESS_ALIVE=true"
+          Write-Host "PID=$($p.Id)"
+          Write-Host "MAIN_WINDOW_HANDLE=$($p.MainWindowHandle)"
+          Write-Host "MAIN_WINDOW_TITLE=$($p.MainWindowTitle)"
+          if ($p.MainWindowHandle -eq 0) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "ZubiVPN process stayed alive but no main window was created"
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "LAUNCH_SMOKE=PASS"
+
       - name: Record proof
         shell: pwsh
         run: |

@@ -1,0 +1,113 @@
+name: Verify ZubiVPN WebView2 v32
+
+on:
+  push:
+    branches:
+      - verify-webview-v32
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout verification branch
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reassemble exact source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem webview32/chunk*.txt | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 source chunks, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("webview32/source.zip", [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash webview32/source.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SOURCE_ARCHIVE_SHA256=$hash"
+          if ($hash -ne "0072e6848ca1ca376c0ac73579960879ab180fcdc63e9d588b8e864f8a2b52e3") {
+            throw "Source archive hash mismatch"
+          }
+          Expand-Archive webview32/source.zip webview32/src -Force
+
+      - name: Apply compile-safe patch mirrored to final package
+        shell: pwsh
+        run: |
+          $discord = "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/DiscordPresenceService.cs"
+          $txt = Get-Content $discord -Raw
+          $txt = $txt.Replace("var body = new byte[n];", "var body = new byte[(int)n];")
+          Set-Content $discord $txt
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -r win-x64
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -c Release -r win-x64 --no-restore
+
+      - name: Publish
+        shell: pwsh
+        run: dotnet publish webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -c Release -r win-x64 --self-contained true --no-restore -o webview32/publish
+
+      - name: Launch WebView2 smoke test
+        shell: pwsh
+        run: |
+          $exe = "webview32/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing after publish" }
+          $before = Get-Date
+          try {
+            $p = Start-Process -FilePath $exe -PassThru
+          } catch {
+            Write-Host "START_PROCESS_EXCEPTION=$($_.Exception.Message)"
+            throw
+          }
+          Start-Sleep -Seconds 12
+          $p.Refresh()
+          if ($p.HasExited) {
+            Write-Host "PROCESS_EXITED=true"
+            Write-Host "EXIT_CODE=$($p.ExitCode)"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$before.AddSeconds(-5); Level=2} -ErrorAction SilentlyContinue |
+              Select-Object -First 20 TimeCreated,ProviderName,Id,Message |
+              Format-List | Out-String | Write-Host
+            $appLog = Join-Path $env:LOCALAPPDATA "ZubiVPN\logs\app.log"
+            if (Test-Path $appLog) { Get-Content $appLog -Raw | Write-Host }
+            throw "ZubiVPN exited during startup smoke test"
+          }
+          Write-Host "PROCESS_ALIVE=true"
+          Write-Host "PID=$($p.Id)"
+          Write-Host "MAIN_WINDOW_HANDLE=$($p.MainWindowHandle)"
+          Write-Host "MAIN_WINDOW_TITLE=$($p.MainWindowTitle)"
+          if ($p.MainWindowHandle -eq 0) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "ZubiVPN process stayed alive but no main window was created"
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "WEBVIEW_LAUNCH_SMOKE=PASS"
+
+      - name: Record verification proof
+        shell: pwsh
+        run: |
+          $exe = "webview32/publish/ZubiVPN.exe"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          @(
+            "WINDOWS_BUILD=PASS"
+            "WINDOWS_PUBLISH=PASS"
+            "WEBVIEW_LAUNCH_SMOKE=PASS"
+            "BUILD_OS=windows-latest"
+            "RUNTIME=win-x64"
+            "SOURCE_ARCHIVE_SHA256=0072e6848ca1ca376c0ac73579960879ab180fcdc63e9d588b8e864f8a2b52e3"
+            "EXE_SHA256=$sha"
+            "ROUTE=Windows -> AWS Edge -> encrypted WireGuard backhaul -> AWS Core -> Internet"
+          ) | Set-Content webview32/publish/VERIFIED-BUILD.txt
+          Get-Content webview32/publish/VERIFIED-BUILD.txt
+
+      - name: Upload launch-verified build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubiVPN-WebView2-v32-Windows-Verified
+          path: webview32/publish/
+          if-no-files-found: error

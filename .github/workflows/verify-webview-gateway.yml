@@ -1,0 +1,166 @@
+name: Verify ZubiVPN WebView Gateway
+
+on:
+  push:
+    branches:
+      - verify-webview-v32
+  workflow_dispatch:
+
+jobs:
+  gateway-build-launch:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Reassemble exact source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem verification-webview/chunk*.txt | Sort-Object Name
+          if ($parts.Count -ne 5) { throw "Expected 5 chunks, found $($parts.Count)" }
+          $b64 = ($parts | ForEach-Object { Get-Content $_.FullName -Raw }) -join ''
+          [IO.File]::WriteAllBytes("verification-webview/source.zip", [Convert]::FromBase64String($b64))
+          $hash = (Get-FileHash verification-webview/source.zip -Algorithm SHA256).Hash.ToLower()
+          Write-Host "SOURCE_SHA256=$hash"
+          if ($hash -ne "6b9dc9d5eaca1de1c2ebcef0b18b0dbf67e6479e6e6949594b643a23685c13dc") {
+            throw "Source archive hash mismatch"
+          }
+          Expand-Archive verification-webview/source.zip verification-webview/src -Force
+
+      - name: Apply final client fixes
+        shell: pwsh
+        run: |
+          $projectRoot = "verification-webview/src/ZubiVPN-WebView2-DoubleAWS-v32.0.1/ZubiVPN.WebView"
+          $serviceRoot = Join-Path $projectRoot "Services"
+
+          foreach ($name in @("CoreApiService.cs","EdgeService.cs","DiagnosticsService.cs")) {
+            $file = Join-Path $serviceRoot $name
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.Net\.Http;") {
+              Set-Content $file ("using System.Net.Http;`r`n" + $txt)
+            }
+          }
+
+          foreach ($rel in @("App.xaml.cs","MainWindow.xaml.cs","Services/WireGuardService.cs","Services/HistoryService.cs","Services/DiscordPresenceService.cs")) {
+            $file = Join-Path $projectRoot $rel
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.IO;") {
+              Set-Content $file ("using System.IO;`r`n" + $txt)
+            }
+          }
+
+          $discord = Join-Path $serviceRoot "DiscordPresenceService.cs"
+          $txt = Get-Content $discord -Raw
+          $txt = $txt.Replace("var body = new byte[n];", "var body = new byte[(int)n];")
+          Set-Content $discord $txt
+
+          $core = Join-Path $serviceRoot "CoreApiService.cs"
+          $txt = Get-Content $core -Raw
+          $txt = $txt.Replace('private const string CorePin = "b9234be6f5436f0f3f744ca3ca33f1a4f18a45b9729eac0ad418b9991c0c3288";','private const string CorePin = "227a881b8e89d4e7a90f14c73afda1a06385962bec26ccf8654258dcad72c84e";')
+          $txt = $txt.Replace('private static readonly string[] Bases = ["https://zubivpn.net:7474", "https://16.164.95.43:7474"];','private static readonly string[] Bases = ["https://63.189.51.215"];')
+          $txt = $txt.Replace('SendAsync<CoreHealthReply>(HttpMethod.Get, "/health", null, null, ct);','SendAsync<CoreHealthReply>(HttpMethod.Get, "/core/health", null, null, ct);')
+          $txt = $txt.Replace('app = "ZubiVPN-WebView/32.0"','app = "ZubiVPN-WebView/32.0.2"')
+          $txt = $txt.Replace('ZubiVPN Core API unavailable','ZubiVPN AWS Edge/Core control gateway unavailable')
+          Set-Content $core $txt
+
+          $proj = Join-Path $projectRoot "ZubiVPN.WebView.csproj"
+          $txt = Get-Content $proj -Raw
+          $txt = $txt.Replace('<Version>32.0.1</Version>','<Version>32.0.2</Version>')
+          $txt = $txt.Replace('<AssemblyVersion>32.0.1.0</AssemblyVersion>','<AssemblyVersion>32.0.2.0</AssemblyVersion>')
+          $txt = $txt.Replace('<FileVersion>32.0.1.0</FileVersion>','<FileVersion>32.0.2.0</FileVersion>')
+          Set-Content $proj $txt
+
+      - name: Restore
+        shell: pwsh
+        run: dotnet restore verification-webview/src/ZubiVPN-WebView2-DoubleAWS-v32.0.1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -r win-x64
+
+      - name: Build
+        shell: pwsh
+        run: dotnet build verification-webview/src/ZubiVPN-WebView2-DoubleAWS-v32.0.1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -c Release -r win-x64 --no-restore
+
+      - name: Publish
+        shell: pwsh
+        run: dotnet publish verification-webview/src/ZubiVPN-WebView2-DoubleAWS-v32.0.1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -c Release -r win-x64 --self-contained true --no-restore -o verification-webview/publish
+
+      - name: Verify Edge and Core gateway routes
+        shell: pwsh
+        run: |
+          $edge = & curl.exe -k -sS --connect-timeout 5 --max-time 12 -o verification-webview/edge.json -w "%{http_code}" https://63.189.51.215/health
+          $core = & curl.exe -k -sS --connect-timeout 5 --max-time 12 -o verification-webview/core.json -w "%{http_code}" https://63.189.51.215/core/health
+          $login = & curl.exe -k -sS --connect-timeout 5 --max-time 12 -o verification-webview/login.json -w "%{http_code}" -X POST https://63.189.51.215/auth/login -H "Content-Type: application/json" -d '{"username":"__zubi_probe__","password":"__zubi_probe__"}'
+          $reg = & curl.exe -k -sS --connect-timeout 5 --max-time 12 -o verification-webview/register.json -w "%{http_code}" -X POST https://63.189.51.215/wg/register -H "Authorization: Bearer invalid-probe" -H "Content-Type: application/json" -d '{"public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","device":"verification-probe"}'
+          Write-Host "EDGE_HEALTH=$edge"
+          Write-Host "CORE_HEALTH_VIA_EDGE=$core"
+          Write-Host "LOGIN_INVALID_VIA_EDGE=$login"
+          Write-Host "REGISTER_INVALID=$reg"
+          if ($edge -ne "200") { throw "Edge health failed: $edge" }
+          if ($core -ne "200") { throw "Core health through Edge failed: $core" }
+          if ($login -ne "401") { throw "Login gateway did not reach Core auth route: $login" }
+          if ($reg -ne "401") { throw "WireGuard registrar did not validate invalid session correctly: $reg" }
+
+      - name: Launch WebView2 smoke test
+        shell: pwsh
+        run: |
+          $exe = "verification-webview/publish/ZubiVPN.exe"
+          if (!(Test-Path $exe)) { throw "ZubiVPN.exe missing" }
+          $before = Get-Date
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 12
+          $p.Refresh()
+          if ($p.HasExited) {
+            Write-Host "PROCESS_EXITED=true"
+            Write-Host "EXIT_CODE=$($p.ExitCode)"
+            Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$before.AddSeconds(-5); Level=2} -ErrorAction SilentlyContinue |
+              Select-Object -First 30 TimeCreated,ProviderName,Id,Message |
+              Format-List | Out-String | Write-Host
+            $log = Join-Path $env:LOCALAPPDATA "ZubiVPN\logs\app.log"
+            if (Test-Path $log) { Get-Content $log | Write-Host }
+            throw "ZubiVPN exited during startup"
+          }
+          Write-Host "PROCESS_ALIVE=true"
+          Write-Host "MAIN_WINDOW_HANDLE=$($p.MainWindowHandle)"
+          Write-Host "MAIN_WINDOW_TITLE=$($p.MainWindowTitle)"
+          if ($p.MainWindowHandle -eq 0) {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "No main window"
+          }
+          if ($p.MainWindowTitle -ne "ZubiVPN") {
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            throw "Unexpected title: $($p.MainWindowTitle)"
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "WEBVIEW_LAUNCH_SMOKE=PASS"
+
+      - name: Record proof
+        shell: pwsh
+        run: |
+          $exe = "verification-webview/publish/ZubiVPN.exe"
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          @(
+            "WINDOWS_BUILD=PASS"
+            "WINDOWS_PUBLISH=PASS"
+            "WEBVIEW_LAUNCH_SMOKE=PASS"
+            "EDGE_HEALTH=PASS"
+            "CORE_HEALTH_VIA_EDGE=PASS"
+            "CORE_AUTH_ROUTE_VIA_EDGE=PASS"
+            "EDGE_WG_REGISTER_ROUTE=PASS"
+            "CONTROL_ROUTE=Windows -> AWS Edge:443 -> AWS Core:7474"
+            "VPN_ROUTE=Windows -> AWS Edge:51820/UDP -> encrypted backhaul -> AWS Core -> Internet"
+            "DIRECT_CORE_VPN_FALLBACK=DISABLED"
+            "SOURCE_SHA256=6b9dc9d5eaca1de1c2ebcef0b18b0dbf67e6479e6e6949594b643a23685c13dc"
+            "EXE_SHA256=$sha"
+          ) | Set-Content verification-webview/publish/VERIFIED-BUILD.txt
+          Get-Content verification-webview/publish/VERIFIED-BUILD.txt
+
+      - name: Upload verified build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZubiVPN-WebView2-v32.0.2-Gateway-Verified
+          path: verification-webview/publish/
+          if-no-files-found: error

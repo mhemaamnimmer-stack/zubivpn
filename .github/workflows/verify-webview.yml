@@ -68,6 +68,27 @@ jobs:
             }
           }
 
+
+          $coreFile = Join-Path $projectRoot "Services/CoreApiService.cs"
+          $txt = Get-Content $coreFile -Raw
+          $txt = $txt.Replace('private const string CorePin = "b9234be6f5436f0f3f744ca3ca33f1a4f18a45b9729eac0ad418b9991c0c3288";','private const string CorePin = "227a881b8e89d4e7a90f14c73afda1a06385962bec26ccf8654258dcad72c84e";')
+          $txt = $txt.Replace('private static readonly string[] Bases = ["https://zubivpn.net:7474", "https://16.164.95.43:7474"];','private static readonly string[] Bases = ["https://63.189.51.215"];')
+          $txt = $txt.Replace('SendAsync<CoreHealthReply>(HttpMethod.Get, "/health", null, null, ct);','SendAsync<CoreHealthReply>(HttpMethod.Get, "/core/health", null, null, ct);')
+          $txt = $txt.Replace('app = "ZubiVPN-WebView/32.0"','app = "ZubiVPN-WebView/32.0.2"')
+          $txt = $txt.Replace('public string Token { get; set; } = "";','public string Token { get; set; } = "";`r`n    [JsonPropertyName("access_token")] public string AccessToken { get; set; } = "";`r`n    [JsonIgnore] public string SessionToken => !string.IsNullOrWhiteSpace(Token) ? Token : AccessToken;')
+          $txt = $txt.Replace('ZubiVPN Core API unavailable','ZubiVPN AWS Edge/Core control gateway unavailable')
+          Set-Content $coreFile $txt
+
+          $bridgeFile = Join-Path $projectRoot "Services/NativeBridge.cs"
+          $txt = Get-Content $bridgeFile -Raw
+          $txt = $txt.Replace('if (string.IsNullOrWhiteSpace(r.Token)) throw new InvalidOperationException("Login succeeded without a session token");`r`n        _token = r.Token;','var sessionToken = r.SessionToken;`r`n        if (string.IsNullOrWhiteSpace(sessionToken)) throw new InvalidOperationException("Login succeeded without a session token");`r`n        _token = sessionToken;')
+          Set-Content $bridgeFile $txt
+
+          $projFile = Join-Path $projectRoot "ZubiVPN.WebView.csproj"
+          $txt = Get-Content $projFile -Raw
+          $txt = $txt.Replace('<Version>32.0.1</Version>','<Version>32.0.2</Version>').Replace('<AssemblyVersion>32.0.1.0</AssemblyVersion>','<AssemblyVersion>32.0.2.0</AssemblyVersion>').Replace('<FileVersion>32.0.1.0</FileVersion>','<FileVersion>32.0.2.0</FileVersion>')
+          Set-Content $projFile $txt
+
       - name: Build
         shell: pwsh
         run: dotnet build verification-webview/src/ZubiVPN-WebView2-DoubleAWS-v32.0.1/ZubiVPN.WebView/ZubiVPN.WebView.csproj -c Release -r win-x64 --no-restore
@@ -80,11 +101,11 @@ jobs:
         shell: pwsh
         continue-on-error: true
         run: |
-          function Probe([string]$Name,[string]$Url,[string[]]$Args) {
+          function Probe([string]$Name,[string]$Url,[string[]]$ExtraArgs) {
             $out = "verification-webview/$Name-body.txt"
             try {
               $base = @("-k","-sS","--connect-timeout","5","--max-time","12","-o",$out,"-w","%{http_code}")
-              $code = & curl.exe @base @Args $Url
+              $code = & curl.exe @base @ExtraArgs $Url
               "$Name=$code" | Tee-Object -FilePath verification-webview/BACKEND-PROBE.txt -Append
               if (Test-Path $out) {
                 $body=(Get-Content $out -Raw)
@@ -94,9 +115,9 @@ jobs:
               "$Name=ERROR $($_.Exception.Message)" | Add-Content verification-webview/BACKEND-PROBE.txt
             }
           }
-          Probe "CORE_HEALTH" "https://zubivpn.net:7474/health" @()
+          Probe "CORE_HEALTH_VIA_EDGE" "https://63.189.51.215/core/health" @()
           Probe "EDGE_HEALTH" "https://63.189.51.215/health" @()
-          Probe "CORE_LOGIN_INVALID" "https://zubivpn.net:7474/auth/login" @("-H","Content-Type: application/json","-d",'{"username":"__zubi_probe__","password":"__zubi_probe__"}')
+          Probe "CORE_LOGIN_INVALID_VIA_EDGE" "https://63.189.51.215/auth/login" @("-H","Content-Type: application/json","-d",'{"username":"__zubi_probe__","password":"__zubi_probe__"}')
           Probe "EDGE_REGISTER_INVALID" "https://63.189.51.215/wg/register" @("-H","Authorization: Bearer invalid-probe","-H","Content-Type: application/json","-d",'{"public_key":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=","device":"verification-probe"}')
           Get-Content verification-webview/BACKEND-PROBE.txt
 
@@ -162,7 +183,8 @@ jobs:
             "LAUNCH_SMOKE=PASS"
             "MAIN_WINDOW_TITLE=ZubiVPN"
             "ARCHITECTURE=Windows -> AWS Edge -> WireGuard backhaul -> AWS Core -> Internet"
-            "CORE_API=https://zubivpn.net:7474"
+            "CORE_API_AUTHORITY=https://zubivpn.net:7474"
+            "CLIENT_CONTROL_GATEWAY=https://63.189.51.215:443"
             "EDGE_REGISTRAR=https://63.189.51.215/wg/register"
             "EDGE_WIREGUARD=63.189.51.215:51820/udp"
             "DIRECT_CORE_VPN_FALLBACK=DISABLED"

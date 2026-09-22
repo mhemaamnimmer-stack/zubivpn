@@ -47,15 +47,21 @@ jobs:
       - name: Apply source fixes mirrored in final package
         shell: pwsh
         run: |
-          $targets = @(
+          $httpTargets = @(
             "verification/src/ZubiVPN.Wpf/Services/IpLookupService.cs",
-            "verification/src/ZubiVPN.Wpf/Services/ZubiApiService.cs"
+            "verification/src/ZubiVPN.Wpf/Services/ZubiApiService.cs",
+            "verification/src/ZubiVPN.Wpf/Services/EdgeRegistrarService.cs"
           )
-          foreach ($file in $targets) {
+          foreach ($file in $httpTargets) {
             $txt = Get-Content $file -Raw
             if ($txt -notmatch "(?m)^using System\.Net\.Http;") {
               Set-Content $file ("using System.Net.Http;`r`n" + $txt)
             }
+          }
+          $wireGuard = "verification/src/ZubiVPN.Wpf/Services/WireGuardService.cs"
+          $txt = Get-Content $wireGuard -Raw
+          if ($txt -notmatch "(?m)^using System\.IO;") {
+            Set-Content $wireGuard ("using System.IO;`r`n" + $txt)
           }
 
       - name: Build

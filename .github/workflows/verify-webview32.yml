@@ -48,6 +48,19 @@ jobs:
             }
           }
 
+          $ioTargets = @(
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/WireGuardService.cs",
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/HistoryService.cs",
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/MainWindow.xaml.cs",
+            "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/App.xaml.cs"
+          )
+          foreach ($file in $ioTargets) {
+            $txt = Get-Content $file -Raw
+            if ($txt -notmatch "(?m)^using System\.IO;") {
+              Set-Content $file ("using System.IO;`r`n" + $txt)
+            }
+          }
+
           $discord = "webview32/src/ZubiVPN-WebView2-DoubleAWS-v1/ZubiVPN.WebView/Services/DiscordPresenceService.cs"
           $txt = Get-Content $discord -Raw
           if ($txt -notmatch "(?m)^using System\.IO;") {

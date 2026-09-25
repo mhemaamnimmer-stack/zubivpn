@@ -36,6 +36,7 @@ sudo apt install -y git
 ### 3. Download ZubiVPN
 
 ```bash
+cd ~
 git clone https://github.com/mhemaamnimmer-stack/zubivpn.git
 cd zubivpn
 ls
